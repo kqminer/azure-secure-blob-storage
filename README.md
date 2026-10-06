@@ -2,16 +2,18 @@
 
 ## Overview
 
-This project demonstrates how I configured and validated a secure Azure Blob Storage environment using Microsoft Entra ID, Azure RBAC, lifecycle management, data-protection features, and storage firewall rules.
+I built this lab to get hands-on with securing Azure Blob Storage beyond just creating a storage account and uploading a file.
 
-The goal was to create a storage design that:
+I wanted to work through a few things I expect to deal with as an Azure administrator:
 
-- avoids anonymous and Shared Key access
-- separates management-plane and data-plane permissions
-- gives compliance users read-only blob access
-- protects blobs from accidental deletion or overwrite
-- automatically moves aging data to lower-cost storage tiers
-- limits storage access by network source
+- controlling who can read or change blob data
+- understanding the difference between Azure RBAC and storage data permissions
+- protecting files from accidental deletion or changes
+- moving older data to cheaper storage automatically
+- restricting where storage can be accessed from
+- testing the controls instead of assuming they worked
+
+The main resources were a storage account, a blob container called `labdata`, and a test file called `report.txt`.
 
 ---
 
@@ -45,39 +47,43 @@ stlab43084998
 
 ## 1. Identity and Data-Plane RBAC
 
-The compliance group was granted two different types of access:
+One thing I wanted to understand better was the difference between being able to see an Azure resource and being able to access the data inside it.
 
-- **Reader** at the resource-group level for Azure resource visibility
-- **Storage Blob Data Reader** at the storage-account level for read-only blob access
+I assigned `grp-lab-compliance`:
 
-This demonstrates the difference between Azure management-plane permissions and Storage data-plane permissions.
+- **Reader** at the resource-group level
+- **Storage Blob Data Reader** at the storage-account level
+
+Reader lets the group view the Azure resource, while Storage Blob Data Reader gives it read access to the actual blob data.
 
 ![RBAC role assignments](screenshots/blob-rbac-role-assignments.png)
 
-The auditor account could access blob data but was unable to modify it because no write-capable Storage data role was assigned.
+I tested this with the auditor account. The account could read the blob, but a write attempt failed because I did not give the group a write-capable storage role.
 
 ![Auditor write denied](screenshots/auditor-write-denied.png)
 
 <details>
-<summary>Additional RBAC context</summary>
+<summary>Why this mattered</summary>
 
-The lab demonstrated that resource-level Reader permissions alone do not provide access to blob contents when using Microsoft Entra authentication.
+During the lab, I ran into the difference between the Azure management plane and the storage data plane.
 
-Storage data access requires a separate Storage data role such as **Storage Blob Data Reader** or **Storage Blob Data Contributor**.
+Having Reader access to the storage account does not automatically mean a user can open the files stored inside it. Blob data requires its own Storage data role.
 
 </details>
 
 ---
 
-## 2. Secure Storage Baseline
+## 2. Storage Security Settings
 
-The storage account was configured with a hardened access baseline:
+I changed several of the default access settings on the storage account.
 
-- Blob anonymous access disabled
-- Shared Key authorization disabled
-- Minimum TLS version set to TLS 1.2
+I configured:
 
-Disabling Shared Key access moves authentication toward Microsoft Entra ID and Azure RBAC instead of relying on storage account keys.
+- anonymous blob access: **Disabled**
+- storage account key access: **Disabled**
+- minimum TLS version: **1.2**
+
+I wanted access to rely on Microsoft Entra ID and RBAC instead of storage account keys.
 
 ![Storage security baseline](screenshots/storage-security-baseline.png)
 
@@ -85,71 +91,73 @@ Disabling Shared Key access moves authentication toward Microsoft Entra ID and A
 
 ## 3. Lifecycle Management
 
-A lifecycle rule named `age-out-labdata` was applied to the `labdata/` prefix.
+I created a lifecycle rule called `age-out-labdata` for blobs stored under `labdata/`.
 
-The rule automatically manages aging block blobs:
+The rule moves older files through cheaper storage tiers over time.
 
 | Blob age | Action |
 |---|---|
-| 30 days | Move to Cool tier |
-| 90 days | Move to Archive tier |
+| 30 days | Move to Cool |
+| 90 days | Move to Archive |
 | 365 days | Delete |
 
-This allows older data to move automatically to lower-cost storage tiers without manual administration.
-
 ![Lifecycle policy](screenshots/lifecycle-policy.png)
+
+This was useful for understanding how storage costs can be managed automatically instead of manually moving old files.
 
 ---
 
 ## 4. Data Protection and Recovery
 
-Blob data protection was configured with:
+I enabled:
 
-- blob soft delete
-- container soft delete
+- soft delete for blobs
+- soft delete for containers
 - blob versioning
-
-These features help protect against accidental deletion and unwanted changes.
 
 ![Data protection settings](screenshots/data-protection-settings.png)
 
-I validated version recovery by restoring a previous version of `report.txt`.
+I also tested version recovery instead of stopping at the configuration step.
+
+After changing `report.txt`, I restored an earlier version and confirmed that the previous copy could be recovered.
 
 ![Blob version restored](screenshots/blob-version-restored.png)
 
-This demonstrated that versioning was not only enabled, but could also be used to recover earlier data.
+That helped make the difference between **versioning** and **soft delete** much clearer to me. Versioning protects previous versions of a file, while soft delete helps recover something that was deleted.
 
 ---
 
-## 5. Network Isolation
+## 5. Network Restrictions
 
-Public network access was restricted to selected networks rather than allowing traffic from all networks.
+Next, I restricted the storage account to selected networks.
 
 ![Storage firewall](screenshots/storage-firewall-selected-networks.png)
 
-I then validated the firewall behavior from different access locations.
+I tested access from two different places.
 
-The approved client could access the blob, while Azure Cloud Shell was rejected by the storage network rules.
+The browser session from my approved client could still reach `report.txt`, while Azure Cloud Shell was blocked by the storage firewall.
 
 ![Firewall validation](screenshots/firewall-validation.png)
 
-This demonstrates that network access controls operate separately from authentication and RBAC permissions.
+This was one of the more useful tests in the lab because it showed me that RBAC and network access are two separate checks.
+
+A user can have the correct permissions and still be blocked if the request comes from a network that is not allowed.
 
 ---
 
 ## Validation Summary
 
-| Control | Validation |
+| What I configured | How I tested it |
 |---|---|
-| Group-based RBAC | Compliance group received read-only Storage data access |
-| Least privilege | Auditor write operation denied |
-| Shared Key protection | Storage account key authorization disabled |
+| Compliance group RBAC | Verified Reader and Storage Blob Data Reader assignments |
+| Read-only blob access | Auditor write attempt was denied |
 | Anonymous access | Disabled |
-| TLS | Minimum TLS 1.2 |
-| Lifecycle management | 30/90/365-day lifecycle rule configured |
-| Blob recovery | Previous blob version restored successfully |
+| Storage account keys | Disabled |
+| TLS | Minimum version set to TLS 1.2 |
+| Lifecycle management | Verified 30/90/365-day rule |
+| Versioning | Restored a previous version of `report.txt` |
 | Soft delete | Enabled for blobs and containers |
-| Network restrictions | Cloud Shell blocked while approved client remained accessible |
+| Storage firewall | Approved client worked while Cloud Shell was blocked |
 
 ---
 
@@ -157,59 +165,55 @@ This demonstrates that network access controls operate separately from authentic
 
 ### Management Plane vs. Data Plane
 
-One of the key lessons from this lab was that Azure resource permissions and Storage data permissions are separate.
+This was probably the biggest lesson from the lab.
 
-A user can have permission to view a storage account in Azure Resource Manager without having permission to read the blobs stored inside it.
+At first, it was easy to think that Reader or Owner access to the Azure resource should also mean access to the files inside the storage account.
 
-The compliance group therefore required both:
+It doesn't.
 
-- **Reader** for management-plane visibility
-- **Storage Blob Data Reader** for blob-data access
+Azure resource permissions and blob-data permissions are separate. Once I understood that, the role assignments made much more sense.
 
-### Network Rules vs. Authorization
+### RBAC vs. Network Access
 
-The lab also demonstrated that successful authentication does not guarantee access.
+I also saw that having the right role does not guarantee that a request will reach the storage account.
 
-Even when an identity has valid RBAC permissions, the storage firewall can still reject the request if it originates from an unapproved network location.
+The storage firewall can block the connection before the storage service allows the data operation.
 
-This was validated when the approved client could access `report.txt`, while Azure Cloud Shell was blocked.
-
----
-
-## Key Lessons
-
-This project reinforced several AZ-104 concepts:
-
-- Azure management-plane roles and Storage data-plane roles control different permissions.
-- A user can see a storage account without necessarily being able to access its blobs.
-- Storage network rules can deny a request even when the identity is otherwise authorized.
-- Blob versioning and soft delete provide complementary recovery mechanisms.
-- Lifecycle management can automatically reduce storage costs as data ages.
-- Microsoft Entra authentication and Azure RBAC provide an identity-based alternative to storage account keys.
-- Security controls should be validated with both successful and failed access tests.
+That is why the Cloud Shell test failed even though the identity itself could have valid Azure permissions.
 
 ---
 
-## Scope and Limitations
+## What I Learned
 
-This was a portfolio lab rather than a production deployment.
+The main things I took away from this lab were:
 
-The project focused on Blob Storage security and administration. It did not implement:
+- Azure RBAC and Storage data roles are not the same thing.
+- Reader lets someone view an Azure resource but does not automatically let them read blob data.
+- Storage firewall rules and RBAC solve different problems.
+- Versioning and soft delete work together but protect against different types of mistakes.
+- Lifecycle rules can reduce storage costs without manual cleanup.
+- Testing failed access is just as useful as testing successful access.
 
-- Private Endpoint architecture
+---
+
+## Scope
+
+This was a focused portfolio lab, so I did not try to turn it into a full production storage environment.
+
+Some things I would add in a larger project are:
+
+- Private Endpoints
+- private DNS
 - customer-managed encryption keys
-- Azure Policy enforcement for Storage
-- diagnostic logging to Log Analytics
-- production-scale backup requirements
-- Infrastructure as Code deployment
-
-These would be appropriate extensions for a production environment.
+- Azure Monitor / diagnostic logs
+- Azure Policy
+- Infrastructure as Code
 
 ---
 
 ## Cleanup
 
-After validation, the lab resource group was removed to avoid unnecessary Azure charges.
+After I finished testing, I removed the lab resources so they would not continue generating Azure charges.
 
 ---
 
@@ -231,19 +235,16 @@ azure-secure-blob-storage/
 
 ---
 
-## Skills Demonstrated
+## Skills Used
 
 - Azure Blob Storage
 - Microsoft Entra ID
 - Azure RBAC
 - Storage Blob Data Reader
 - Storage Blob Data Contributor
-- Management plane vs. data plane
 - Blob lifecycle management
 - Blob versioning
 - Soft delete
 - Storage firewall rules
-- Network-based access restrictions
-- Least-privilege access design
 - Azure Portal
 - Azure CLI
